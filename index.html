@@ -122,6 +122,10 @@
 </head>
 <body oncontextmenu="return false" oncopy="return false" oncut="return false">
 
+<!-- Formulaire caché : permet à Netlify de détecter le formulaire « resultats » -->
+<form name="resultats" data-netlify="true" netlify-honeypot="bot-field" hidden>
+  <input name="bot-field"><input name="code_acces"><input name="nom"><input name="serie"><input name="note_sur_20"><input name="bonnes_reponses"><input name="sans_reponse"><input name="sorties_page"><input name="duree_min"><input name="termine_le"><input name="code_verification"><input name="remarque"><input name="Q1"><input name="Q2"><input name="Q3"><input name="Q4"><input name="Q5"><input name="Q6"><input name="Q7"><input name="Q8"><input name="Q9"><input name="Q10"><input name="Q11"><input name="Q12"><input name="Q13"><input name="Q14"><input name="Q15"><input name="Q16"><input name="Q17"><input name="Q18"><input name="Q19"><input name="Q20"><input name="Q21"><input name="Q22"><input name="Q23"><input name="Q24"><input name="Q25"><input name="Q26"><input name="Q27"><input name="Q28"><input name="Q29"><input name="Q30"><input name="Q31"><input name="Q32"><input name="Q33"><input name="Q34"><input name="Q35"><input name="Q36"><input name="Q37"><input name="Q38"><input name="Q39"><input name="Q40"><input name="ligne_resultat">
+</form>
 <header class="bandeau">
   <div class="bandeau-in">
     <div class="logo">∑</div>
@@ -204,10 +208,13 @@
 <!-- Résultats en Excel : lien du site + #resultats -->
 <section class="carte cache" id="ecranResultats">
   <h2>Résultats en fichier Excel</h2>
-  <p class="sous-titre">Ouvrez les e-mails « Résultats QCM 1ère C/D », sélectionnez tout leur texte (Ctrl + A), copiez (Ctrl + C)
-  et collez-le ci-dessous (Ctrl + V). Vous pouvez coller plusieurs fois : les résultats s'ajoutent et les doublons sont ignorés.</p>
-  <textarea id="collage" rows="6" placeholder="Collez ici le texte des e-mails…"></textarea>
-  <button class="btn" onclick="analyserTexte()">Ajouter ces résultats</button>
+  <p class="sous-titre">Choisissez le fichier CSV téléchargé depuis Netlify (onglet Forms → resultats → Download as CSV).
+  Le site vérifie les codes, signale les doublons et prépare un fichier Excel trié par série et par nom.</p>
+  <label class="btn secondaire" style="display:block;text-align:center;margin-top:0">Choisir le fichier CSV de Netlify
+    <input type="file" id="fichierCsv" accept=".csv,text/csv" class="cache" onchange="importerFichier(this)"></label>
+  <details style="margin-top:14px"><summary class="sous-titre" style="cursor:pointer;margin:0">Ou coller du texte (e-mails, CSV…)</summary>
+  <textarea id="collage" rows="5" placeholder="Collez ici le texte…" style="margin-top:10px"></textarea>
+  <button class="btn" onclick="analyserTexte()">Ajouter ces résultats</button></details>
   <div class="etat" id="bilanCollage"></div>
   <p class="sous-titre" id="compte" style="margin:18px 0 0;text-align:center"></p>
   <div class="deux-btn">
@@ -225,7 +232,8 @@
 /* ===================== RÉGLAGES (modifiables) ===================== */
 var REGLAGES = {
   titre: "Évaluation de mathématiques",
-  emailEnseignant: "kboubaitikil@gmail.com",   // les résultats arrivent à cette adresse (service FormSubmit)
+  enregistrementNetlify: true,    // résultats enregistrés dans Netlify (onglet Forms du site)
+  emailCopie: "",                 // facultatif : adresse pour recevoir aussi une copie par e-mail (FormSubmit)
   secondesParQuestion: 45,
   pointsParQuestion: 0.5,         // 40 × 0,5 = 20
   classes: ["1ère C", "1ère D"],
@@ -421,32 +429,46 @@ function ligneResultat() {
   return champs.map(nettoyer).join("|");
 }
 
+function champsResultats() {
+  var c = { "code_acces": S.acces, "nom": S.nom, "serie": S.classe, "note_sur_20": noteTexte(S.note),
+            "bonnes_reponses": S.bonnes, "sans_reponse": S.vides, "sorties_page": S.sorties,
+            "duree_min": noteTexte(Math.round((S.fin - S.debut) / 600) / 100),
+            "termine_le": new Date(S.fin).toLocaleString("fr-FR"), "code_verification": S.code, "remarque": S.motif || "—" };
+  S.detail.forEach(function (d, i) { c["Q" + (i + 1)] = d; });
+  c["ligne_resultat"] = ligneResultat();
+  return c;
+}
+
+function envoiNetlify() {
+  var corps = new URLSearchParams(); corps.append("form-name", "resultats");
+  var c = champsResultats(); Object.keys(c).forEach(function (k) { corps.append(k, c[k]); });
+  return fetch("/", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: corps.toString() })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return true; });
+}
+
+function envoiEmail() {
+  var c = champsResultats(), d = { _subject: "Résultats QCM 1ère C/D", _template: "table", _captcha: "false" };
+  Object.keys(c).forEach(function (k) { d[k] = c[k]; });
+  return fetch("https://formsubmit.co/ajax/" + encodeURIComponent(REGLAGES.emailCopie), {
+    method: "POST", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(d)
+  }).then(function (r) { return r.json(); }).then(function (rep) {
+    if (!(rep && (rep.success === true || rep.success === "true"))) throw new Error("refusé"); return true; });
+}
+
 function envoyerResultats() {
   var etat = $("etatEnvoi"), btn = $("btnRenvoyer");
   btn.classList.add("cache");
-  if (!REGLAGES.emailEnseignant || (REGLAGES.emailEnseignant.indexOf("@") < 0 && REGLAGES.emailEnseignant.length < 10)) {
-    etat.textContent = "Aucune adresse d'enseignant configurée : montrez cet écran à l'enseignant."; return;
-  }
-  etat.textContent = "Envoi des résultats à l'enseignant…";
-  var donnees = {
-    _subject: "Résultats QCM 1ère C/D", _template: "table", _captcha: "false",
-    "Code d'accès": S.acces, "Nom et prénom": S.nom, "Série": S.classe, "Note /20": noteTexte(S.note),
-    "Bonnes réponses": S.bonnes + " / " + Q.length, "Sans réponse (temps écoulé)": S.vides,
-    "Sorties de la page": S.sorties, "Remarque": S.motif || "—",
-    "Durée (min)": Math.round((S.fin - S.debut) / 600) / 100,
-    "Terminé le": new Date(S.fin).toLocaleString("fr-FR"), "Code de vérification": S.code
-  };
-  S.detail.forEach(function (d, i) { donnees["Q" + (i + 1)] = d; });
-  donnees["Ligne de résultat (pour Excel)"] = ligneResultat();
-  fetch("https://formsubmit.co/ajax/" + encodeURIComponent(REGLAGES.emailEnseignant), {
-    method: "POST", headers: { "Content-Type": "application/json", "Accept": "application/json" },
-    body: JSON.stringify(donnees)
-  }).then(function (r) { return r.json(); }).then(function (rep) {
-    if (rep && (rep.success === true || rep.success === "true")) {
-      S.envoye = true; sauver(); etat.innerHTML = '<span style="color:#13795b;font-weight:600">✓ Résultats envoyés à l\'enseignant.</span>';
-    } else throw new Error((rep && rep.message) || "refusé");
-  }).catch(function (e) {
-    etat.innerHTML = '<span style="color:#c0392b">⚠ Envoi impossible pour l\'instant. Vérifiez votre connexion puis réessayez, ou montrez cet écran à l\'enseignant.</span>';
+  etat.textContent = "Enregistrement des résultats…";
+  var envois = [];
+  if (REGLAGES.enregistrementNetlify) envois.push(envoiNetlify());
+  if (REGLAGES.emailCopie) envois.push(envoiEmail().catch(function () { return false; }));
+  if (!envois.length) { etat.textContent = "Montrez cet écran à l'enseignant."; return; }
+  envois[0].then(function () {
+    S.envoye = true; sauver();
+    etat.innerHTML = '<span style="color:#13795b;font-weight:600">✓ Résultats enregistrés. Vous pouvez fermer cette page.</span>';
+  }).catch(function () {
+    etat.innerHTML = '<span style="color:#c0392b">⚠ Enregistrement impossible pour l\'instant. Vérifiez votre connexion puis réessayez. ' +
+                     'Si le problème continue, faites une capture de cet écran pour l\'enseignant.</span>';
     btn.classList.remove("cache");
   });
 }
@@ -458,6 +480,12 @@ var TOUS = [];
 function chargerTous() { try { TOUS = JSON.parse(localStorage.getItem("qcm1cd_resultats") || "[]"); } catch (e) { TOUS = []; } }
 function sauverTous() { try { localStorage.setItem("qcm1cd_resultats", JSON.stringify(TOUS)); } catch (e) {} }
 
+function importerFichier(input) {
+  var f = input.files && input.files[0]; if (!f) return;
+  var lecteur = new FileReader();
+  lecteur.onload = function () { $("collage").value = String(lecteur.result); analyserTexte(); input.value = ""; };
+  lecteur.readAsText(f, "utf-8");
+}
 function analyserTexte() {
   var texte = $("collage").value.replace(/ /g, " ");
   var re = /QCM1CD\|([\s\S]*?)\|FIN/g, m, ajoutes = 0, doublons = 0;
