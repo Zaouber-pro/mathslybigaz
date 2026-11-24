@@ -65,6 +65,9 @@
   .succes { display:flex; gap:10px; align-items:center; background:var(--vert-clair); color:var(--vert); border-radius:10px;
             padding:10px 14px; font-size:14px; font-weight:600; margin-bottom:4px; }
   .cache { display:none !important; }
+  .bloc-wa { margin-top:18px; padding:16px; border-radius:12px; background:#eefaf2; border:1.5px solid #bfe8cf; }
+  .bloc-wa p { margin:0 0 10px; font-size:14px; line-height:1.5; color:#1d4d33; }
+  .btn.wa { background:#1fa855; margin-top:6px; } .btn.wa:hover { background:#178a45; }
 
   /* Question */
   .q-entete { display:flex; justify-content:space-between; align-items:center; gap:14px; }
@@ -192,6 +195,12 @@
   <div class="boite-code"><small>Code de vérification — à montrer à l'enseignant si on vous le demande</small><div class="code" id="code"></div></div>
   <div class="etat" id="etatEnvoi"></div>
   <button class="btn cache" id="btnRenvoyer" onclick="envoyerResultats()">Renvoyer les résultats</button>
+  <div class="bloc-wa cache" id="blocWhatsApp">
+    <p id="texteWa"><b>Dernière étape obligatoire :</b> envoyez vos résultats à votre enseignant par WhatsApp. Le message est déjà prêt, appuyez simplement sur « Envoyer » dans WhatsApp.</p>
+    <button class="btn wa" onclick="envoyerWhatsApp()">Envoyer mes résultats par WhatsApp</button>
+    <button class="btn secondaire" onclick="copierMessage()">Copier le message (SMS, autre application)</button>
+    <div class="etat" id="etatCopie"></div>
+  </div>
 </section>
 
 <!-- Vérification enseignant : lien du site + #prof -->
@@ -212,7 +221,7 @@
   Le site vérifie les codes, signale les doublons et prépare un fichier Excel trié par série et par nom.</p>
   <label class="btn secondaire" style="display:block;text-align:center;margin-top:0">Choisir le fichier CSV de Netlify
     <input type="file" id="fichierCsv" accept=".csv,text/csv" class="cache" onchange="importerFichier(this)"></label>
-  <details style="margin-top:14px"><summary class="sous-titre" style="cursor:pointer;margin:0">Ou coller du texte (e-mails, CSV…)</summary>
+  <details style="margin-top:14px" open><summary class="sous-titre" style="cursor:pointer;margin:0">Ou coller les messages WhatsApp des élèves (ou des e-mails, du CSV…)</summary>
   <textarea id="collage" rows="5" placeholder="Collez ici le texte…" style="margin-top:10px"></textarea>
   <button class="btn" onclick="analyserTexte()">Ajouter ces résultats</button></details>
   <div class="etat" id="bilanCollage"></div>
@@ -233,7 +242,8 @@
 var REGLAGES = {
   titre: "Évaluation de mathématiques",
   enregistrementNetlify: true,    // résultats enregistrés dans Netlify (onglet Forms du site)
-  emailCopie: "",                 // facultatif : adresse pour recevoir aussi une copie par e-mail (FormSubmit)
+  emailCopie: "",
+  whatsappProf: "",               // numéro WhatsApp de l'enseignant, ex. "2376XXXXXXXX" (vide = l'élève choisit le contact)                 // facultatif : adresse pour recevoir aussi une copie par e-mail (FormSubmit)
   secondesParQuestion: 45,
   pointsParQuestion: 0.5,         // 40 × 0,5 = 20
   classes: ["1ère C", "1ère D"],
@@ -247,6 +257,8 @@ var K = ["723ecb", "6ffbe9", "b51c61", "f243f8", "737e60", "b2c572", "4dd8f0", "
 var SEL = "28b75ac8ed0f";
 var CODES = ["ecb3b010", "bb240e1d", "e4fec49e", "97bc33c9", "a50ec581", "ce621a93", "22d6eaa5", "e06b12de", "72890624", "acac1fbd", "8ea95c9e", "dbcdae89", "6f06a584", "9fd2c653", "741e3a5e", "8c5cff25", "f38a514c", "9f34c7e0", "8950471d", "369eaf3f", "cbb081e0", "4db21ce1", "511f51d6", "6fd30c15", "95c97b4d", "0e564206", "50b3bbc1", "ae274188", "e9194f0b", "e66ff876", "5fb11ef0", "0d83a56d", "35d87923", "c1c6b834", "b440010d"];  // empreintes des codes d'accès
 var CLE_STOCKAGE = "qcm1cd_" + SEL;
+var MODE_FICHIER = false;   // true = version fichier envoyée par WhatsApp
+var URL_NETLIFY = "https://mathslybigaz.netlify.app/";
 var codeValide = null;
 
 function h(s) { var x = 0x811c9dc5; for (var i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 0x01000193) >>> 0; }
@@ -418,7 +430,34 @@ function afficherFin() {
     a.textContent = l[0]; b.textContent = l[1]; tr.appendChild(a); tr.appendChild(b); $("recap").appendChild(tr);
   });
   $("code").textContent = S.code;
+  if (MODE_FICHIER) {
+    $("motifFin").textContent = S.motif || ("Merci " + S.nom + ". Il reste une étape : envoyer vos résultats par WhatsApp.");
+    if (!S.envoye) envoyerResultats(); else $("blocWhatsApp").classList.remove("cache");
+    return;
+  }
   if (!S.envoye) envoyerResultats(); else $("etatEnvoi").innerHTML = '<span style="color:#13795b;font-weight:600">✓ Résultats envoyés à l\'enseignant.</span>';
+}
+
+function b64(s) { return btoa(unescape(encodeURIComponent(s))); }
+function deb64(s) { return decodeURIComponent(escape(atob(s))); }
+function messageWhatsApp() {
+  var compact = S.detail.map(function (d) { return d === "✔" ? "1" : (d === "—" ? "-" : "0"); }).join("");
+  var champs = ["W", S.acces, S.nom, S.classe, noteTexte(S.note), S.bonnes, S.vides, S.sorties,
+                noteTexte(Math.round((S.fin - S.debut) / 600) / 100), new Date(S.fin).toLocaleString("fr-FR"),
+                S.code, S.motif || "—", compact].map(nettoyer).join("|");
+  return "Résultats QCM 1ère C/D – " + S.nom + " (" + S.classe + ", code " + S.acces + ")\n" +
+         "QCM1CD64:" + b64(champs) + ":FIN";
+}
+function envoyerWhatsApp() {
+  var num = String(REGLAGES.whatsappProf || "").replace(/[^0-9]/g, "");
+  location.href = "https://wa.me/" + num + "?text=" + encodeURIComponent(messageWhatsApp());
+}
+function copierMessage() {
+  var m = messageWhatsApp(), ok = function () { $("etatCopie").textContent = "✓ Message copié : collez-le dans WhatsApp ou un SMS pour votre enseignant."; };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(m).then(ok, function () { secours(m); ok(); });
+  else { secours(m); ok(); }
+  function secours(txt) { var z = document.createElement("textarea"); z.value = txt; document.body.appendChild(z); z.select();
+    try { document.execCommand("copy"); } catch (e) {} z.remove(); }
 }
 
 function nettoyer(v) { return String(v).replace(/[|\r\n]+/g, " ").trim(); }
@@ -442,6 +481,10 @@ function champsResultats() {
 function envoiNetlify() {
   var corps = new URLSearchParams(); corps.append("form-name", "resultats");
   var c = champsResultats(); Object.keys(c).forEach(function (k) { corps.append(k, c[k]); });
+  if (MODE_FICHIER) {
+    return fetch(URL_NETLIFY, { method: "POST", mode: "no-cors", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: corps.toString() })
+      .then(function () { return true; });
+  }
   return fetch("/", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: corps.toString() })
     .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return true; });
 }
@@ -462,14 +505,21 @@ function envoyerResultats() {
   var envois = [];
   if (REGLAGES.enregistrementNetlify) envois.push(envoiNetlify());
   if (REGLAGES.emailCopie) envois.push(envoiEmail().catch(function () { return false; }));
-  if (!envois.length) { etat.textContent = "Montrez cet écran à l'enseignant."; return; }
+  if (MODE_FICHIER) {
+    envois.forEach(function (p) { p.catch(function () {}); });
+    S.envoye = true; sauver();
+    etat.textContent = ""; $("blocWhatsApp").classList.remove("cache");
+    return;
+  }
+  if (!envois.length) { etat.textContent = "Montrez cet écran à l'enseignant."; $("blocWhatsApp").classList.remove("cache"); return; }
   envois[0].then(function () {
     S.envoye = true; sauver();
     etat.innerHTML = '<span style="color:#13795b;font-weight:600">✓ Résultats enregistrés. Vous pouvez fermer cette page.</span>';
   }).catch(function () {
-    etat.innerHTML = '<span style="color:#c0392b">⚠ Enregistrement impossible pour l\'instant. Vérifiez votre connexion puis réessayez. ' +
-                     'Si le problème continue, faites une capture de cet écran pour l\'enseignant.</span>';
+    etat.innerHTML = '<span style="color:#c0392b">⚠ Enregistrement en ligne impossible. Envoyez vos résultats par WhatsApp ci-dessous.</span>';
     btn.classList.remove("cache");
+    $("texteWa").innerHTML = "<b>Envoyez vos résultats par WhatsApp :</b> le message est déjà prêt, appuyez simplement sur « Envoyer ».";
+    $("blocWhatsApp").classList.remove("cache");
   });
 }
 
@@ -488,6 +538,14 @@ function importerFichier(input) {
 }
 function analyserTexte() {
   var texte = $("collage").value.replace(/ /g, " ");
+  texte = texte.replace(/QCM1CD64:([A-Za-z0-9+\/=\s]+?):FIN/g, function (_, enc) {
+    try {
+      var p = deb64(enc.replace(/\s+/g, "")).split("|");
+      if (p[0] !== "W") return "";
+      var det = p[12].split("").map(function (ch) { return ch === "1" ? "✔" : (ch === "-" ? "—" : "✘"); });
+      return " QCM1CD|" + p.slice(1, 12).join("|") + "|" + det.join("|") + "|FIN ";
+    } catch (e) { return ""; }
+  });
   var re = /QCM1CD\|([\s\S]*?)\|FIN/g, m, ajoutes = 0, doublons = 0;
   while ((m = re.exec(texte)) !== null) {
     var p = m[1].replace(/\s*\n\s*/g, " ").split("|").map(function (x) { return x.trim(); });
